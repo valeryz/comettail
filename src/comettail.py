@@ -3,7 +3,7 @@
 from twisted.internet import reactor, process, defer, error, protocol
 from twisted.internet import interfaces
 from twisted.application import service
-from twisted.web import server, resource
+from twisted.web import server, resource, static
 import os
 import json
 import uuid
@@ -177,9 +177,14 @@ class CometTailServer(resource.Resource):
         d.addCallback(finish_result)
         return server.NOT_DONE_YET
 
-
 def comettail():
-    site = server.Site(CometTailServer())
+    thisdir = os.path.dirname(__file__)
+    root = resource.Resource()
+    root.putChild('dashboard', static.File(os.path.join(thisdir, 'dashboard')))
+    root.putChild('js', static.File(os.path.join(thisdir, 'js'),
+                                    defaultType="application/x-javascript"))
+    root.putChild('comettail', CometTailServer())
+    site = server.Site(root)
     reactor.listenTCP(8080, site)
     reactor.run()
 
