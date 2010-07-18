@@ -1,34 +1,26 @@
-from twisted.internet import reactor, process, defer
+# Twisted server for 'tail -F' COMET streams
+
+from twisted.internet import reactor, process, defer, error, protocol
+from twisted.internet import interfaces
 from twisted.application import service
 from twisted.web import server, resource
 import os
 import json
 import uuid
-from itertools import takewhile
 
 BUFFER_SIZE = 1024
-CHILD_KEEP_TIMEOUT = 10 # seconds
+CHILD_KEEP_TIMEOUT = 20 # seconds
 MAX_RESPONSE_SIZE = 1024
 
-class TailProtocol(process.ProcessProtocol):
+class TailProtocol(protocol.ProcessProtocol):
 
     """
     a process protocol that receives the data from the process and fires a
     given deferred
     """
 
-    def __init__(self):
-        self.deferred = defer.Deferred()
-        self.buffer = ""
-        self.timer = None
-        self.chunks = []
-        self.chunk_count = 0
-
-    def _timeout(self):
-        self.timer = None
-        self.deferred.callback(self.buffer)
-        self.buffer = ""
-        self.deferred = Deferred()
+    def __init__(self, buf):
+        self.buf = buf
 
     def childDataReceived(self, childFD, data):
         """
@@ -36,64 +28,38 @@ class TailProtocol(process.ProcessProtocol):
         """
         if not data:
             return
-        if childFD == 1:                # STDOUT
-            self.buffer += data
-            if len(self.buffer) > BUFFER_SIZE:
-                if self.timer:
-                    self.timer.cancel()
-                self.deferred.callback((self, self.buffer)
-                self.buffer = ""
-                self.deferred = defer.Deferred()
-            else:
-                if not self.timer:
-                    self.timer = reactor.callLater(0.2, self._timeout)
+        if childFD == 1:
+            # TODO: smooth it out!, don't return small chunks often,
+            # combine them!
+            self.buf.chunk_arrived(data)
 
-class FileMonitor:
-    def __init__(self, filename):
-        # run 'tail -f' subprocess
-        self.protocol = TailProtocol()
-        self.pool = []
-        reactor.spawnProcess(self.protocol,
-                             "tail", args=["tail", "-f", filename],
-                             env=os.environ)
 
-    def get_data(self, fromchunk, bufid):
+class Buffer(object):
+
+    def __init__(self, filename, container):
         """
-        get the latest lines of the 'tail -f' subprocess
-        """
-        d = defer.Deferred()
-        self.pool.append(d)
-        return d
-
-class MonitorResource(resource.Resource):
-    isLeaf = True
-    def __init__(self, monitor):
-        self.monitor = monitor
-
-    def _reply(self, reply, request):
-        request.write(str(reply))
-        request.finish()
-
-    def render_GET(self, request):
-        d = self.monitor.get_data()
-        d.addCallback(self._reply, request)
-        return server.NOT_DONE_YET
-
-
-class Buffer:
-
-    def __init__(self, filename):
-        """
-        initialize buffer for a given filename and launch the 'tail -f'
+        initialize buffer for a given filename and launch the 'tail -F'
         """
         self.filename = filename
+        self.container = container
         self.chunks = []
-        self.chunk_count
-        # spawnProcess
+        self.chunk_count = 0
         self.bufid = uuid.uuid4().hex
         self.waiting_deferreds = []
+        # spawnProcess
+        proto = TailProtocol(self)
+        self.process = reactor.spawnProcess(proto, "tail",
+                                            args=["tail", "-F", filename],
+                                            env=os.environ)
+        self.timer = None
 
-    def _finish_getting(self, _, fromchunk):
+    def _schedule_timer(self):
+        if self.timer:
+            self.timer.reset(CHILD_KEEP_TIMEOUT)
+        else:
+            self.timer = reactor.callLater(CHILD_KEEP_TIMEOUT, self._timeout)
+
+    def _finish_getting(self, _, fromchunk, finish_deferred):
         if not fromchunk:
             fromchunk = -1
         data = ""
@@ -102,89 +68,121 @@ class Buffer:
             if chunk_num <= fromchunk:
                 break
             last_chunk = chunk_num
-            data += chunk_data
+            data = chunk_data + data
             if len(data) > MAX_RESPONSE_SIZE:
                 break
         if data:
             return defer.succeed({
                 'from' : last_chunk,
-                'data' : data
+                'data' : data,
                 'bufid' : self.bufid,
                 })
         else:
             d = defer.Deferred()
-            d.addCallback(self._finish_getting, fromchunk)
+            d.addCallback(self._finish_getting, fromchunk, None)
             self.waiting_deferreds.append(d)
+            if finish_deferred:
+                def remove_d(_):
+                    try:
+                        self.waiting_deferreds.remove(d)
+                    except ValueError:
+                        pass
+                    if not self.waiting_deferreds:
+                        self._schedule_timer()
+                finish_deferred.addBoth(remove_d)
             return d
 
-    def get_data(self, fromchunk, bufid):
+    def get_data(self, fromchunk, bufid, finish_deferred):
         if bufid != self.bufid:
             fromchunk = None
-        return self._finish_getting(None, fromchunk)
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
+        return self._finish_getting(None, fromchunk, finish_deferred)
 
-class FileBuffers:
+    def chunk_arrived(self, data):
+        """
+        handle arrival of a new chunk data from the 'tail -F' process
+        """
+        self.chunk_count += 1
+        self.chunks.append((self.chunk_count, data))
+        deferreds = self.waiting_deferreds
+        self.waiting_deferreds = []
+        for d in deferreds:
+            d.callback(None)
+        self._schedule_timer()
+
+    def _timeout(self):
+        """
+        shut down the 'tail' -F process and discard all data
+        """
+        try:
+            self.process.signalProcess("TERM")
+        except error.ProcessExitedAlready:
+            pass
+        self.container.remove(self.filename)
+
+
+class FileBuffers(object):
     def __init__(self):
         self.buffers = {}
-        self.timers = {}
 
-    def _timeout(self, filename):
-        """
-        Delete a buffer that hasn't been used for long
-        """
-        del self.timers[filename]
-        buf = buffers['filename']
-        del self.buffers['filename']
-        buf.shutdown()
-
-    @defer.inlineCallbacks
-    def get_data(self,  filename, fromchunk, bufid):
+    def get_data(self,  filename, fromchunk, bufid, finish_deferred):
         try:
             buf = self.buffers[filename]
         except KeyError:
-            buf = yield Buffer(filename)
+            buf = Buffer(filename, self)
             self.buffers[filename] = buf
-            self.timers[filename](reactor.callLater(CHILD_KEEP_TIMEOUT,
-                                                    self._timeout, filename))
+        return buf.get_data(fromchunk, bufid, finish_deferred)
+
+    def remove(self, filename):
         try:
-            timer = self.timers[filename]
-            timer.reset(CHILD_KEEP_TIMEOUT)
+            del self.buffers[filename]
         except KeyError:
             pass
-        return buf.get_data(fromchunk, bufid)
 
 def format_result(result):
     return json.dumps(result)
 
 class CometTailServer(resource.Resource):
 
+    isLeaf = True
+
     def __init__(self):
         resource.Resource.__init__(self)
         self.filebuffers = FileBuffers()
 
     def render_GET(self, request):
-        filename = request.args['filename']
+        filename = request.args.get('filename')
         if not filename:
             return resource.ErrorPage(403, "No filename specified",
                                       "No filename specified")
         filename = filename[0]
-        fromchunk = request.args['from']
+        fromchunk = request.args.get('from')
         if fromchunk:
-            fromchunk = fromchunk[0]
-        bufid = request.args['bufid']
+            try:
+                fromchunk = int(fromchunk[0])
+            except (TypeError, ValueError):
+                fromchunk = None
+        bufid = request.args.get('bufid')
         if bufid:
             bufid = bufid[0]
-        d = self.filebuffers.get_data(filename, fromchunk, bufid)
+        d = defer.maybeDeferred(self.filebuffers.get_data,
+                                filename, fromchunk, bufid,
+                                request.notifyFinish())
         def finish_result(result):
+            print result
             request.write(format_result(result))
             request.finish()
         d.addCallback(finish_result)
         return server.NOT_DONE_YET
 
+
 def comettail():
-    # TODO: create monitors
     site = server.Site(CometTailServer())
     reactor.listenTCP(8080, site)
     reactor.run()
+
 
 if __name__ == '__main__':
     comettail()
