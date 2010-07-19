@@ -181,6 +181,7 @@ def comettail():
     thisdir = os.path.dirname(__file__)
     root = resource.Resource()
     root.putChild('dashboard', static.File(os.path.join(thisdir, 'dashboard')))
+    root.putChild('css', static.File(os.path.join(thisdir, 'css')))
     root.putChild('js', static.File(os.path.join(thisdir, 'js'),
                                     defaultType="application/x-javascript"))
     root.putChild('comettail', CometTailServer())

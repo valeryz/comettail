@@ -1,11 +1,23 @@
 <!DOCTYPE HTML>
 <html> <head>
-<title></title>
+<title>Comet Tail</title>
+<link rel="stylesheet" type="text/css" href="/css/ui-lightness/jquery-ui-1.8.2.custom.css">
 <script type="text/javascript" src="/js/jquery-1.4.2.js"></script>
 <script type="text/javascript" src="/js/dashboard.js"></script>
+<script type="text/javascript" src="/js/jquery-ui-1.8.2.custom.min.js"></script>
 </head>
 <body>
 <h1>Comet Tail</h1>
-<p>This is a paragraph</p>
+<input type="button" id="addfile" value="Add File">
+<div id="dialog" title="File to watch" style="display: none">
+  <ul>
+  <li><label for="#title">Title</label><input type="text" name="title" id="title"></li>
+  <li><label for="#filename">Filename</label><input type="text" name="filename" id="filename"></li>
+  </ul>
+</div>
+<div id="filewatch_win" style="display: none"></div>
+<div id="filewatch_windows" style="display: none">
+
+</div>
 </body>
 </html>
