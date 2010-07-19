@@ -6,4 +6,4 @@ eggs/
 *.egg-info
 *.pyc
 *.pyo
-
+.ropeproject
