@@ -178,11 +178,12 @@ class CometTailServer(resource.Resource):
         return server.NOT_DONE_YET
 
 def comettail():
-    thisdir = os.path.dirname(__file__)
+    from pkg_resources import resource_filename
+    media = resource_filename(__name__, 'media')
     root = resource.Resource()
-    root.putChild('dashboard', static.File(os.path.join(thisdir, 'dashboard')))
-    root.putChild('css', static.File(os.path.join(thisdir, 'css')))
-    root.putChild('js', static.File(os.path.join(thisdir, 'js'),
+    root.putChild('dashboard', static.File(os.path.join(media, 'dashboard')))
+    root.putChild('css', static.File(os.path.join(media, 'css')))
+    root.putChild('js', static.File(os.path.join(media, 'js'),
                                     defaultType="application/x-javascript"))
     root.putChild('comettail', CometTailServer())
     site = server.Site(root)

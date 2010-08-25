@@ -6,7 +6,9 @@ setup(
     description = "Comet Tail Server",
     author = 'Valeriy Zamarayev',
     author_email = 'valeriy.zamarayev@gmail.com',
-    install_requires = ['setuptools'],
+    install_requires = ['Twisted'],
     packages=find_packages('src'),
     package_dir={'' : 'src'},
+    package_data={'comettail' : ['media']},
+    entry_points={'console_scripts' : ['comettail=comettail:comettail']},
 )
